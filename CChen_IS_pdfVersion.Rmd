@@ -1,0 +1,471 @@
+---
+title: Socioeconomic Status, Racial/Ethnic Minority Status, Environmental Factors and COVID-19 Case Mortality Rate in the United States
+author: Christina Chen
+date: Feb 14, 2022
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load library, include = FALSE}
+library(tidyverse)
+library(dbplyr)
+library(stargazer)
+library(broom)
+library(ggstance)
+library(broom.mixed)
+library(ggplot2)
+library(Rmisc)
+library(stringi)
+library(jtools)
+library(cowplot)
+library(specr)
+library(lme4)
+library(sf)
+library(fixest)
+library(tinytex)
+```
+
+```{r import dataset, include = FALSE}
+aqi2010 <- read.csv("annual_aqi_by_county_2010.csv")
+front <- "annual_aqi_by_county_"
+back <- ".csv"
+readcsv <- function(year) {
+  year_str = as.character(year)
+  filename = paste0(front, year_str, back)
+  read.csv(filename)
+}
+
+aqidata <- aqi2010
+year <- seq(2011, 2021, by = 1)
+for (i in year){
+  temp <- readcsv(i)
+  aqidata <- rbind(aqidata, temp)
+}
+```
+
+```{r rename ACScensus dataset, include = FALSE}
+acs <- read_csv("ACSsurvey.csv")
+acs <- acs %>%
+  dplyr::rename("FIPS" = "Geo_FIPS",
+        "County" = "Geo_NAME",
+         "popTotal" = "SE_A00001_001",
+         "male" = "SE_A02001_002",
+         "female" = "SE_A02001_003",
+         "age1824" = "SE_A01001_006",
+         "age2534" = "SE_A01001_007",
+         "age3555" =  "SE_A01001_008",
+         "age4554" = "SE_A01001_009",
+         "age5564" = "SE_A01001_010",
+         "age6574" = "SE_A01001_011",
+         "age7584" = "SE_A01001_012",
+         "age85plus" = "SE_A01001_013",
+         "white_Alone" = "SE_B04001_003",
+         "black_Alone" = "SE_B04001_004",
+         "aIndianNative_Alone" = "SE_B04001_005",
+         "asian_Alone" = "SE_B04001_006",
+         "pacificislander_Alone" ="SE_B04001_007",
+         "latino" = "SE_B04001_010",
+         "noHealthInsurance" = "SE_A20001_002",
+         "totalInsuranceCover" = "SE_A20001_003",
+         "publicHealthInsurance" = "SE_A20001_004",
+         "privateHealthInsuarnce" = "SE_A20001_005",
+         "totalHouseholds" = "SE_A14001_001",
+         "incomelessthan10000" = "SE_A14001_002",
+         "incomelessthan14999" = "SE_A14001_003",
+         "incomelessthan19999" = "SE_A14001_004",
+         "incomelessthan24999" = "SE_A14001_005",
+         "incomelessthan29999" = "SE_A14001_006",
+         "incomelessthan34999" = "SE_A14001_007",
+         "incomelessthan39999" = "SE_A14001_008",
+         "incomelessthan44999" = "SE_A14001_009",
+         "incomelessthan49999" = "SE_A14001_010",
+         "incomelessthan59999" = "SE_A14001_011",
+         "incomelessthan74999" = "SE_A14001_012",
+         "incomelessthan99999" = "SE_A14001_013",
+         "incomelessthan124999" = "SE_A14001_014",
+         "incomelessthan149999" = "SE_A14001_015",
+         "incomelessthan199999" = "SE_A14001_016",
+         "incomegreaterthan200000" = "SE_A14001_017",
+         "medianHouseholdIncome" = "SE_A14006_001",
+         "medianIncomeWhiteAlone" = "SE_A14007_002",
+         "medianIncomeBlackAlone" = "SE_A14007_003",
+         "medianIncomeAmericanIndian" = "SE_A14007_004",
+         "medianIncomeAsianAlone" = "SE_A14007_005",
+         "medianIncomeNativeHawaiian" = "SE_A14007_006",
+         "medianIncomeLatino" = "SE_A14007_009")
+``` 
+
+
+```{r create new Census variable, include = FALSE}
+acs <- acs %>% 
+  dplyr::mutate(adolescent = SE_A01001_004 + SE_A01001_005) %>%
+  group_by(County) %>%
+  dplyr::mutate(white_pct = white_Alone / popTotal * 100) %>%
+  dplyr::mutate(black_pct = black_Alone / popTotal * 100) %>%
+  dplyr::mutate(asian_pct = asian_Alone / popTotal * 100) %>%
+  dplyr::mutate(latino_pct = latino / popTotal * 100) %>%
+  dplyr::mutate(IndianNative_pct = aIndianNative_Alone / popTotal * 100) %>%
+  dplyr::mutate(pacificislander_pct = pacificislander_Alone / popTotal * 100) %>%
+  dplyr::mutate(other_race_pct = (SE_B04001_008 + SE_B04001_009) / popTotal * 100) %>%
+  dplyr::mutate(noHealthInsurance_pct = noHealthInsurance/ (noHealthInsurance + totalInsuranceCover) * 100)
+```
+
+```{r clean aqidata, include = FALSE}
+aqi_average <- aqidata %>%
+  dplyr::group_by(County,State) %>%
+  dplyr::mutate(gooddays_pct = Good.Days / Days.with.AQI * 100) %>%
+  dplyr::mutate(pm2.5_pct = Days.PM2.5 / Days.with.AQI * 100) %>%
+  dplyr::mutate(ozone_pct = Days.Ozone / Days.with.AQI * 100) %>%
+  dplyr::summarise(gooddays_pct_average = mean(gooddays_pct), pm2.5_pct_average = mean(pm2.5_pct), ozone_pct_average = mean(ozone_pct))
+
+```
+
+```{r covid, include = FALSE}
+covid <- read_csv("us-counties.csv")
+covid <- covid %>%
+  dplyr::rename("County" = "county",
+         "State" = "state") %>%
+  filter(date == "2022-01-13") %>%
+  group_by(County, State) %>%
+  dplyr::mutate(case_fatality_rate = deaths/ cases * 100)
+```
+
+```{r join-covid & aqi & acs, include = FALSE}
+aqi_covid <- left_join(aqi_average, covid, by = c("County", "State"))
+aqi_covid <- aqi_covid %>%
+  dplyr::mutate(Geo_QName = paste0(County, " County", ", " ,State))
+acs_aqi_covid <- left_join(aqi_covid, acs, by = c("Geo_QName")) %>%
+  dplyr::mutate(case_mortality_rate = deaths / popTotal * 100) %>%
+  select(-incomegreaterthan200000, -contains("incomelessthan"), contains("_pct"))
+```
+
+```{r create median variables, include = FALSE}
+acs_aqi_covid <- acs_aqi_covid %>%
+  filter(!is.na(noHealthInsurance_pct)) %>%
+  dplyr::mutate(median_noInsurance_coverage = ifelse(noHealthInsurance_pct >=median(.$noHealthInsurance_pct), "Above", "Below"))
+
+acs_aqi_covid <- acs_aqi_covid %>%
+  dplyr::mutate(median_Income_county = ifelse(medianHouseholdIncome >= median(.$medianHouseholdIncome, na.rm = TRUE), "Above", "Below"))
+
+acs_aqi_covid <- acs_aqi_covid %>% 
+  mutate(insurance_indicator = case_when(median_noInsurance_coverage == "Above" ~ 0, median_noInsurance_coverage == "Below" ~ 1)) %>%
+  mutate(income_indicator = case_when(median_Income_county == "Above" ~ 0, median_Income_county == "Below" ~ 1))
+  
+
+```
+
+```{r t-test, include = FALSE}
+t.test(case_mortality_rate ~ median_noInsurance_coverage, data = acs_aqi_covid)
+```
+
+In one Families USA article, “The Catastrophic Cost of Uninsurance: COVID-19 cases and deaths closely tied to America’s health coverage gaps,” Stan Dorn and Rebecca Gordon state that “each 10% increase in the proportion of a county's residents who lacked health insurance was associated with a 70% increase in COVID-19 cases and a 48% increase in COVID-19 deaths.” This study attempts to replicate those findings and study not only socioeconomic status gaps but also racial inequities and environmental injustice in COVID-19 mortality.
+
+```{r case_mortality_rate and health insurance, echo=FALSE, message = FALSE, warning = FALSE, fig.show='hold'}
+ggplot(acs_aqi_covid, aes(x = black_pct, y = case_mortality_rate, shape = median_noInsurance_coverage, colour = median_noInsurance_coverage)) +
+  geom_point() + 
+  ylab("Covid-19 Cases Mortality Rate") +
+  xlab("Percentage of Black Population (%)") + 
+ # guides(color = guide_legend(title = "Median Percentage\nNo Health Insurance Coverage"))+
+  scale_shape_manual(values = c(0,2)) +
+  stat_smooth(method = loess) +
+  ggtitle("Relationship between COVID-19 Mortality Rate\nand Percengate of Black Population") +
+  labs(shape = "Median Percentage\nNo Health Insurance Coverage") +
+  guides(color=FALSE) + 
+  theme_bw()+
+  theme(legend.position = c(1, 1),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(3, 3, 3, 3))
+```
+
+###### Relationship between COVID-19 Mortality Rate and Percengate of Black Population. 
+
+Counties with an above median population without health insurance coverage have statistically significantly higher COVID mortality rate: on average, these counties had a 0.056 higher COVID mortality rate than counties where more of the population had health insurance. Additionally, it seems that the counties with an above median uninsured population exhibit a higher COVID mortality rate than their below median counterpart disregarding the percentage of black population in the county. In fact, the gap between the two groups widens as the percentage of black population increases from 0% to 35%, but the gap decreases as the percentage of black population continues to increase. This way, it is implied that perhaps the percentage of uninsured population could better explain the change in COVID case mortality rate than demographics variables like race. Meanwhile, it is equally possible that this less significant effect brought by the percentage of uninsured population on case mortality rate could be attributed to other omitted variables, such as household incomes, air quality index, which all affect the COVID-19 case mortality rate to some extent.
+
+```{r merge geometry data, include = FALSE}
+# Geometry Data
+county_shp <- st_read("cb_2018_us_county_500k.shp")
+county_shp2 <- county_shp %>%
+  dplyr::rename(FIPS = GEOID)
+county_shp2$FIPS <- as.numeric(county_shp2$FIPS)
+
+geom_acs_aqi_covid<- left_join(acs_aqi_covid, county_shp2, by = "FIPS")
+```
+
+```{r map pm2.5 ,echo=FALSE, message = FALSE, warning = FALSE, fig.show='hold', out.width = "50%"}
+# Maps 
+ggplot(data = geom_acs_aqi_covid, aes(geometry = geometry)) +
+  geom_sf(aes(fill = pm2.5_pct_average), lwd = 0.025) +
+  coord_sf(xlim = c(-126, -66), ylim = c(23, 51.5), expand = FALSE) +
+  scale_fill_gradient(low = "#ffffff", high = "#FF7F50", na.value = "grey50") + 
+  ggtitle("Distribution of PM2.5 across County") + 
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(fill = "Percentage of PM2.5 Days detcted")
+
+
+ggplot(data = geom_acs_aqi_covid, aes(geometry = geometry)) +
+  geom_sf(aes(fill = ozone_pct_average ), lwd = 0.025) +
+  coord_sf(xlim = c(-126, -66), ylim = c(23, 51.5), expand = FALSE) +
+  scale_fill_gradient(low = "#ffffff", high = "#FF7F50", na.value = "grey50") + 
+  ggtitle("Distribution of Days detected Ozone across County") + 
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(fill = "Percentage of Ozone Days detcted")
+```
+
+###### Maps visualizing the Air Quality Index in the United States.
+
+The missing counties presented in maps could be attributed to the lack of air quality monitors in some areas, especially in the middle west. According to Interactive Map of Air Quality Monitors provided by Environmental Protection Agency (EPA), we could observe the lack of active monitors for all criteria pollutants (CO, Pb, NO2, Ozone, PM10, PM2.5, and SO2) in Montana, North Dakota, South Dakota, Nebraska, as well as part of Texas. 
+
+The Air Quality Index has revealed that the state of California and Washington have the most counties with the highest number of days detected pm2.5 and ozone, while counties in the west and Southwest, including in New Mexico, Colorado, and Wyoming, continue to dominate the most-ozone-polluted list. Claimed by Henry Fountain from *the New York Times*, this unequal distribution of dangerous levels air pollutants, ozone and smoke (pm2.5), could be partially explained by the worsening wildfires and extreme heat that occur in parts of the Western United States. Meanwhile, southeastern states like South Carolina, Georgia, and Texas also have exhibited greater number of days detected ozone.
+
+```{r map black population, echo=FALSE, message = FALSE, warning = FALSE, fig.show='hold', out.width = "50%"}
+ggplot(data = geom_acs_aqi_covid, aes(geometry = geometry)) +
+  geom_sf(aes(fill = black_pct ), lwd = 0.025) +
+  coord_sf(xlim = c(-126, -66), ylim = c(23, 51.5), expand = FALSE) +
+  scale_fill_gradient(low = "#ffffff", high = "#FF7F50", na.value = "grey50") + 
+  ggtitle("Distribution of Black Population across County") + 
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(fill = "Percentage Black Population")
+
+ggplot(data = geom_acs_aqi_covid, aes(geometry = geometry)) +
+  geom_sf(aes(fill = case_mortality_rate ), lwd = 0.025) +
+  coord_sf(xlim = c(-126, -66), ylim = c(23, 51.5), expand = FALSE) +
+  scale_fill_gradient(low = "#ffffff", high = "#FF7F50", na.value = "grey50") + 
+  ggtitle("Distribution of COVID-19 Mortality Rate across County") + 
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(fill = "Case Mortality Rate")
+```
+
+###### Distribution of the percentage Black Population and COVID-19 Case Mortality Rate.
+
+Correspondingly, counties that exhibit higher occurrences of ozone demonstrate a higher COVID-19 mortality rate. This positive relationship is suggested by Liu and Li (2020), in which county-level mortality rates are regressed on concentration values of ground-level ozone, controlling median household income, rate of hospital beds, population density, and days since first confirmed case. Their study reveals a positive association between ground-level ozone and county level mortality rates disregarding all controlled variables. The Harvard Chan study also found an association between air pollution over many years with an 11% increase in mortality from COVID-19 infection for every 1 microgram/cubic meter increase in air pollution (Wu et al., 2020).
+
+No prior pattern is observed between counties with greater number of days detected pm2.5 and the percentage of black population, but there seems to have some overlap in counties between the distribution of ozone and the black population. Echoed with the overlap, Miranda et al., (2011) manifests that the proportion of non-Hispanic Black people in counties with the worst air quality is over twice the corresponding proportion in counties with the best air quality.
+
+In addition, higher case mortality rate is indeed exhibited in counties in the southeast, where higher black population populate. These observations definitely qualify as evident health care disparities, as underrepresented minorities are developing COVID-19 infection more frequently and dying disproportionately (Yancy, 2020). Besides the complications brought by poor air quality, the higher prevalence of cardiovasular disease among black people also make them more susceptible to the virus. These communities may therefore be more vulnerable to COVID-19 due to higher pollution exposures and associated comorbidities and thus present a greater likelihood to contract COVID. 
+
+```{r income plots, echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', out.width = "50%"}
+#scatter plots (low income county vs. high income county in mortality rate)
+
+  ggplot(acs_aqi_covid, aes(x = medianHouseholdIncome, y = case_mortality_rate)) +
+  geom_point() +
+  scale_shape_manual(values = c(2)) +
+  xlab("Median Household Income") +
+  ylab("Covid-19 Cases Mortality Rate") +
+  ggtitle("Relationship Between Median Household Income and COVID-19 Mortality Rate") +
+  scale_colour_brewer(palette = "Set1") + 
+  stat_smooth(method = loess) +
+  theme_bw()
+
+
+  ggplot(acs_aqi_covid, aes(x = noHealthInsurance_pct, y = case_mortality_rate)) +
+  geom_point() +
+  scale_shape_manual(values = c(2)) +
+    ylab("Covid-19 Cases Mortality Rate") +
+    xlab("Percentage of Uninsured") +
+    ggtitle("Relationship Between Uninsured Population and COVID-19 Mortality Rate") +
+    #labs(colour = "Regression Line", shape = "Median no Health Insurance Coverage") +
+  scale_colour_brewer(palette = "Set2") + 
+  stat_smooth(method = loess) +
+  theme_bw()
+```
+
+###### Relationship between COVID-19 Mortality Rate and Median Household Income and Percentage of Uninsured Population
+
+A negative relationship is demonstrated between median household income and COVID-19 mortality rate. The slope of the fitted line varies as it is steeper when annual median household income is between $14999 and $59999, but becomes flatter as the median household income continues to increase. This gap is extremely obvious when the median household income is less than $50000. It is evident that median household income indeed profoundly plays a role in affecting the COVID-19 case mortality rate, but the effect of median household income becomes less noticeable as it increases. So there are other variables like health insurance coverage that somewhat also explain the case mortality rate. 
+
+Additionaly, differential healthcare seeking behaviors may exist by income, potentially driven by differential access to health care. Such differences could lead to delays in seeking care in response to respiratory infections, as well as differential quality of care available. Less access to health care may result in uncontrolled chronic conditions such as asthma and hence more severe disease (Quinn and Kumar, 2014).
+
+The strong positive association between the percentage of uninsured and COVID-19 case mortality rate supports the well-acknowledged point that health insurances gaps accelerate the spread of epidemics, increasing the likelihood of having severe comorbidities after contracted COVID-19 because of the lack of adequate medical treatments for the uninsured. Without adequate access to health resources and medical care, low-income population without health insurance results in a higher prevalence of less-well-controlled chronic illness. These illnesses leave them more vulnerable to the ravages of COVID-19. Meanwhile, the pandemic has significantly undermined health insurance coverage in the United States. A sudden surge in unemployment — exceeding 20 million workers — has caused many Americans to lose employer-sponsored insurance (Blumenthal, 2020). As such, it is reasonable to include income and health insurance status in our sociodemographics variables while exploring COVID-19 case mortality rate.
+
+Having addressed different attributable variables to COVID-19 case mortality rate, this blog post aims to assess impacts of air quality, social determinants like percentage of uninsured, median household income, as well as race/ethnicity groups on COVID-19 case mortality rate. The regression model is shown below: 
+
+$$
+ycasemortalityrate = \beta_0 + \beta_1 racialgroup + \beta_2 log(median household income) + \\\beta_3 log(uninsured) + \beta_4 (pm2.5) + \beta_5(ozone) + \beta_6(racialgroupuninsured)
+$$
+
+
+```{r bar_plot-racial group, echo=FALSE, warning=FALSE, message=FALSE, fig.dim = c(8, 4)}
+# isolated racial groups
+acs_aqi_covid <- acs_aqi_covid %>% 
+  mutate(racial_group = case_when(white_pct >= 60  ~ "WhiteIsolated", black_pct >= 60 ~ "BlackIsolated", latino_pct >= 60 ~ "LatinoIsolated", IndianNative_pct >= 60 ~ "IndianNativeIsololated", TRUE ~ "Mixed")) 
+
+result.1 <- lm(case_mortality_rate ~ -1 + racial_group, data = acs_aqi_covid)
+
+coef_se_1 <- data.frame(name = c("Isolated Black", "Isololated Native", "Isolated Latino", "Mixed", "Isolated White"),
+                        value = c(0.3597853, 0.6605715, 0.3986355, 0.2742767, 0.2649101),
+                        sd = c(0.04336250, 0.07916872, 0.05038267, 0.04414186, 0.04353346))
+
+ggplot(coef_se_1) +
+  geom_bar(aes(x=name, y=value), stat="identity", fill="skyblue", alpha=0.5) +
+  geom_pointrange(aes(x=name, y=value, ymin=value-sd, ymax=value+sd), colour="orange", alpha=0.9, size=0.88) +
+  theme_bw()+
+  ggtitle("Mean differences in COVID-19 mortality rate") +
+  theme(axis.title.x=element_blank())
+
+```
+
+The bar plot demonstrates the regression coefficients of different race/ethnicity groups with a reference to COVID-19 case mortality rate. It is surprise to see that besides counties categorized with Isolated Black that show a higher case mortality rate in comparison with their Isolated White counterparts, the case mortality rate is predicted to increase by 0.4 and 0.13 for counties categorized with Isolated Native and Isolated Latino respectively, holding Isolated White as the reference group. Although the ratio might not be precise, this tendency coincides with the statistics of *Hospitalization and Death by Race/Ethnicity* (CDC). In particular, the COVID-19 death rate for Blacks or African Americans is 1.7 times higher than their white counterparts, while the death rate for American Indian or Alaska Native, Non-Hispanic persons is 2.2 times their white counterparts. 
+
+```{r bar-plot, echo=FALSE, warning=FALSE, message=FALSE, out.width = "75%"}
+result.2 <- lm(case_mortality_rate ~ log(medianHouseholdIncome) + log(noHealthInsurance_pct), data = acs_aqi_covid)
+
+coef_df <- coef(result.2)
+se_df <- se(result.2)
+
+coef_se_2 <- data.frame(name = c("Median Household Income", "Percentage of Uninsured"),
+                        value = c(-0.21487815, 0.03049185),
+                        sd = c(0.013696792, 0.007017435))
+
+ggplot(coef_se_2) +
+  geom_bar(aes(x=name, y=value), stat="identity", fill="skyblue", alpha=0.5) +
+  geom_pointrange(aes(x=name, y=value, ymin=value-sd, ymax=value+sd), colour="orange", alpha=0.9, size=0.88) +
+  theme_bw()+
+  ggtitle("Marginal effects of a 1% increase on COVID-19 mortality rate") + 
+  theme(axis.title.x=element_blank())
+```
+
+In accordance with the scatterplots presented previously, median household income is predicted to have a negative impact on COVID-19 mortality rate, while the percentage of uninsured population is predicted to generate a positive effect. On the one hand, for every 1% absolute increase in one's median household income, the case mortality rate is estimated to decrease significantly by 0.215. On the other hand, 1% absolute increase in the percentage of uninsured population is predicted to significantly increase the case mortality rate by 0.031. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, out.width = '75%'}
+result.3 <- lm(case_mortality_rate ~ ozone_pct_average + pm2.5_pct_average, data = acs_aqi_covid)
+
+coef_df <- coef(result.3)
+se_df <- se(result.3)
+
+coef_se_3 <- data.frame(name = c("Percentage of Ozone", "Percentage of PM2.5"),
+                        value = c(-0.0006233360, -0.0005645795),
+                        sd = c(0.0001370825, 0.0001458966))
+
+ggplot(coef_se_3) +
+  geom_bar(aes(x=name, y=value), stat="identity", fill="skyblue", alpha=0.5) +
+  geom_pointrange(aes(x=name, y=value, ymin=value-sd, ymax=value+sd), colour="orange", alpha=0.9, size=0.88) +
+  theme_bw()+
+  ggtitle("Marginal effects of a 1% increase on COVID-19 mortality rate") + 
+  ylab("Value") +
+  theme(axis.title.x=element_blank())
+```
+
+Although both regression coefficients of the percentage of days that ozone and pm2.5 detected are statistically significant, they fail to be economically significant, as the coefficients on case mortality rate are negligible. In fact, the negative sign of the coefficients contradicts our expectations, as it is always anticipated that higher concentrations of pm2.5 and ozone in the atmosphere correlate with higher case mortality rate. 
+
+Given the instability of the coefficient and several limitations of the air quality index, we fail to conclude whether pm2.5 and ozone coverage affects the COVID-19 case mortality rate in our study. However, there are studies (Wu et al., 2020 & Solimini et al.,2021) that find a positive correlation between pm2.5 exposure and the COVID mortality rate.
+
+In addition, researchers from Harvard Chan School of Public Health built and validated a statistical model to quantify the extent to which wildfire smoke may have contributed to excess COVID-19 cases and deaths in California, Oregon, and Washington (Zhou et al., 2021). These are three states that exhibit the greatest percentage of days pollutants detected in our map. Through examining the county- and daily -level data on pm2.5 concentrations from monitoring data and the number of COVID-19 cases and deaths in 92 counties, the study found that wildfires amplified the effect of exposure to pm2.5 on COVID-19 cases and deaths. The percentage of the total number of COVID-19 cases and deaths attributable to high pm2.5 levels and ozone levels was substantial in some counties. 
+
+Our approach has several limitations in addition to not explicitly modeling the effects of air quality on case mortality rate. We assume that the concentration of ozone and pm2.5 is equally distributed across counties. Therefore, we employ the percentage the days detected ozone and pm2.5 as air quality index. This is not true in reality, as a higher occurrence of days detected ozone does not mean that the ozone level is high every day. Despite the limitations of our study, our model indeed resembles the methodology adopted by Zhou et al., (2021). Therefore, it is worthwhile to further improve limitations of our model and find out the discrepancy in our results. 
+
+```{r income-specr, echo=FALSE, results='asis', message=FALSE, type="html"}
+results_Income <- specr::run_specs(df = acs_aqi_covid, 
+                     y = c("case_mortality_rate"), 
+                     x = c("log(medianHouseholdIncome)"),
+                     controls = c("insurance_indicator","pm2.5_pct_average", "ozone_pct_average", "black_pct", "insurance_indicator + black_pct"),
+                     subsets = list(income_indicator = unique(acs_aqi_covid$income_indicator),
+                     insurance_indicator = unique(acs_aqi_covid$insurance_indicator)),
+                     model = c("lm"))
+
+plot_specs(results_Income)
+```
+
+This specification curve visualizes the strength of the association between log median household income and COVID-19 case mortality rate but also presents one out of many choices that could make a full set of possible analytic choices and how data varies. It seems that regardless of the choice we make, for every 1% increase in one's median household income, the case mortality rate is predicted to decrease significantly by approximately 0.32% to 0.14% depending on various interactive effects from the two subsets group, holding the listed variables as control. No confounders in the control group seem to reduce the significance on median household income in regard to case mortality rate. Seligman et al., (2021) supports this finding by claiming that substantial inequalities in COVID-19 mortality are like, with disproportionate burdens falling on those who are poor. In particular, COVID-19 deaths are disproportionately among middle- and lower-income people with respect to income. 
+
+On the other hand, it seems that having an above average median household income and a below median uninsured population fails to reduce the significance of median household income on case mortality rate. This indicates that higher income does not necessarily mean better health care access. It is possible for individuals to have health insurance covered but who live in areas where no quality treatments could be accessed or limited hospitals beds are provided.
+
+```{r, echo=FALSE, results='asis', message=FALSE, type="html"}
+# make 2 specification graphs (subsets by racial group, other) 
+results_final <- run_specs(df = acs_aqi_covid, 
+                     y = c("case_mortality_rate"), 
+                     x = c("black_pct", "black_pct + log(medianHouseholdIncome)"), 
+                     controls = c("insurance_indicator","pm2.5_pct_average", "ozone_pct_average + insurance_indicator ", "racial_group"),
+                     subsets = list(income_indicator = unique(acs_aqi_covid$income_indicator)),
+                     model = c("lm"))
+
+plot_specs(results_final)
+#png(width=1024,height=768,filename="spec_curve_1.png")
+#plot_specs(results_final)
+#dev.off()
+```
+
+The point that case mortality rate could be explained by median household income is further cemented in the second specification curve. Differ to the first curve, this one underscores the effect of black population in regard to mortality rate. Since the estimate is negligible (0.001), we fail to conclude that there is economic significance in the effect of black population. On the other hand, it is evident that effect of black population is driven by health insurance status and household income, as both variables prompt the effect of black population to be insignificant. This way, it further implies that COVID-19 case mortality rate could be better explained by these two social determinants, rather than simply race/ethnicity groups. 
+
+Indeed, individuals from racial/ethnic minority groups in the US were already more likely to live in areas with significant social disadvantage, characterized by high unemployment and poverty rates, unaffordable housing, and poor health care infrastructure, poor air quality, which may explain the higher disease burden in these communities (Karmakar et al., 2021). 
+
+Nevertheless, analyzing the whole social structure might perform better explaining COVID-19 case mortality rate. It is recognizable that racism and discrimination are deeply ingrained in the social, political, and economic structures of our society (Tello 2017). These differences often result in unequal access to health care, affordable housing, quality education, etc. All factors somewhat contribute to the case mortality rate. In addition, residents of low-income and racial/ethnic minority communities are more likely to have essential worker occupations, which put them at higher risk of person-to-person SARS-CoV-2 exposure and transmission (Rogers et al., 2020).
+
+In the existing literature there is also the general agreement demonstrating the negative correlation between pollution exposure and income (Banzhaf and Walsh 2008). Grainger and Schreiber (2019) further suggest that low-income (or non-white) neighborhoods are less likely to be monitored for ambient air quality. Given the fact that ambient pollution monitors are strategically sited in attainment counties where high-income people reside with less regulatory oversight, it seems that non-attainment counties that often located near pollution hotspots fail to have ambient pollution monitors. Left unmonitored, these areas are unlikely to receive a reduction in pollution, even if the area’s ambient pollution concentrations exceed national standards (Grainger and Schreiber 2019).
+
+In our study, a wide range of sociodemographic risk factors, including health insurance status, racial/ethnic minority status, and environmental factors, are carefully examined. It is evident that household income and uninsured rate are significantly associated with COVID-19 incidence and mortality. Despite the limitations in our study, it really comes into prominence that these sociodemographic risk factors are closely associated with the racial/ethnic and social disparities in the COVID-19 pandemic in the US (Karmakar et al., 2021). To truly address the disparities and injustice highlighted by COVID-19, these social risk factors and their root causes must be addressed through bold policy action and societal investment.
+
+### Reference
+
+Banzhaf, H. Spencer, and Randall P. Walsh. Do People Vote with Their Feet? An Empir- ical Test of Tiebout’s Mechanism. *American Economic Review*, 2008. 98 (3): 843–63. 
+
+Blumenthal, D., Fowler, E., Abrams, M., Collins, S. Covid-19 – Implications for the Health Care System. *The New England Journal of Medicine*, 2020. https://www.nejm.org/doi/full/10.1056/NEJMsb2021088
+
+Dorn, S. and Gordon, R. The Catastrophic Cost of Uninsurance: COVID-19 cases and deaths closely tied to America’s health coverage gaps. 2021. https://familiesusa.org/resources/the-catastrophic-cost-of-uninsurance-covid-19-cases-and-deaths-closely-tied-to-americas-health-coverage-gaps/
+
+Fountain, H. Health Risks of Smoke and Ozone Rise in the West as Wildfires Worsen. 2022. 
+https://www.nytimes.com/2022/01/05/climate/wildfires-ozone-smoke-california.html
+
+Grainger,C.,and Schreiber,A. Discrimination in Ambient Air Pollution Monitoring? *AEA Papers and Proceedings*, 2019. 109: 277-82.
+
+Hospitalization and Death by Race/Ethnicity. https://www.cdc.gov/coronavirus/2019-ncov/covid-data/investigations-discovery/hospitalization-death-by-race-ethnicity.html
+
+Interactive Map of Air Quality Monitors. https://www.epa.gov/outdoor-air-quality-data/interactive-map-air-quality-monitors
+
+Karmakar M, Lantz PM, Tipirneni R. Association of Social and Demographic Factors With COVID-19 Incidence and Death Rates in the US. *JAMA Netw Open*, 2021. 4(1):e2036462. doi:10.1001/jamanetworkopen.2020.36462
+
+Liu, S., and Li, M.. Ambient air pollutants and their effect on COVID-19 mortality in the United States of America. *Pan American journal of public health*, 2020. 44, e159. https://doi.org/10.26633/RPSP.2020.159Ambient air pollutants and their effect on COVID-19 mortality in the United States of America
+
+Miranda ML, Edwards SE, Keating MH, Paul CJ. Making the Environmental Justice Grade: The Relative Burden of Air Pollution Exposure in the United States. *International Journal of Environmental Research and Public Health*, 2011. 8(6):1755-1771. https://doi.org/10.3390/ijerph8061755
+
+Quinn, SC., and Kumar S. Health Inequalities and Infectious Disease Epidemics: A Challenge for Global Health Security. *Biosecur, Bioterror*, 2014. 12(5): 263-273. https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4170985/
+
+Rogers TN, Rogers  CR, VanSant-Webb  E, Gu  LY, Yan  B, Qeadan  F.  Racial disparities in COVID-19 mortality among essential workers in the United States. *World Med Health Policy*, 2020. 12(3):311-327. doi:10.1002/wmh3.358
+
+Seligman B, Ferranna M, Bloom DE. Social determinants of mortality from COVID-19: A simulation study using NHANES. *PLOS Medicine*, 2021, 18(12): e1003888. https://doi.org/10.1371/journal.pmed.1003888 
+
+Solimini, A., Filipponi, F., Fegatelli, D.A. et al. A global association between Covid-19 cases and airborne particulate matter at regional level, *Sci Rep*. 2021,11, 6256 . https://doi.org/10.1038/s41598-021-85751-z
+
+Tello, M. Racism and discrimination in health care: Providers and patients. 2017. https://www.health.harvard.edu/blog/racism-discrimination-health-care-providers-patients-2017011611015
+
+Wu, X., Nethery, R. C., Sabath, M. B., Braun, D. and Dominici, F., Air pollution and COVID-19 mortality in the United States: Strengths and limitations of an ecological regression analysis. *Science advances*, 2020. 6(45): p.eabd 40- 49.
+
+Yancy CW. COVID-19 and African Americans. *JAMA*, 2020. 323(19):1891–1892. doi:10.1001/jama.2020.6548
+
+Zhou, X., Josey, K., Kamareddine, L., Caine, MC., Liu, T., Mickley, LJ., Cooper,M., Dominici, F. Excess of COVID-19 Cases and Deaths due to Fine Particulate Matter Exposure During the 2020 Wildfires in the United States. *Science Advances*, 2021, doi: 10.1126/sciadv.abi8789.
+
+### Statistical Appendix
+
+#### Link to the replication package folder
+
+https://middleburycollege-my.sharepoint.com/:f:/r/personal/chujunc_middlebury_edu/Documents/Independent%20Study?csf=1&web=1&e=Ffji2F
+
+#### Dataset
+
+ 1.	General COVID-19 data for US county *covid* (Source: New York Times GitHub);
+ 2.	Air Quality Data from 2010 to 2021 for US county *aqidata* (Source: EPA);
+ 3.	American Community Survey Data *acs* (Source: Social Explorer). 
+ 4.	US County Cartographic Boundary Files 2018 *cb_2018_us_county_500k.shp* (Source: Census Bureau’s MAF/TIGER geographic database)
+
+#### Data Summary
+
+Both New York Times and the Covid Tracking Project collect and update covid data, which contains the cumulative covid cases and deaths at a county level base till 2022-01-13. The aqidata includes the average of percent good days, percent pm2.5, as well as percent ozone across counties based on a decade. The acs data derived from American Census provides demographic information, including race/ethnicity, household income, and health insurance coverage which are less affected by times, and thus can be used in this context as confounders. Having merged all three datasets together acs_aqi_covid data has a total observation of 1114 counties with 75 variables.
+
+Based on the assumption that different counties have different base number of total population and different days with AQI index, it is necessary to standardize those measurement by calculating the percentage of those. We consider the concentration of pm2.5 and ozone since people with high historical exposure to PM2.5 and Ozone are more susceptible and likely to have respiratory disease. This explains why we generate variable named “pm2.5_pct_average” and “ozone_pct_average”.
+
+Similarly, we generate the population percentage of each race in each county. To examine whether significant effects across different racial groups on COVID mortality rate exist, we further convert racial proportions to a categorical variable: “racial_group”. To this end, we adopt the classification of racial/ethnicity groups adhere to the 199 Office of Management and Budget (OMB) standards on Race and ethnicity: White, Black or African American, American Indian or Alaska Native, Asian, and Native Hawaiian or Other Pacific Islander. For ethnicity, the OMB standards classify individuals in one of two categories: “Hispanic or Latino” or “Not Hispanic or Latino.” We categorized county that has a >= 60% white population as “White Isolated”, >= 60% black population as “Black Isolated”, and so on. For county that fails to have a race whose percentage is >= 60%, we categorized it as “Mix”. By doing this, we could easily tell significant effects across different racial groups on COVID mortality rate. 
+
+Meanwhile, since we aim to incorporate one’s health insurance status in our model, we create a dummy indicator named “median_noInsurance_coverage”, differentiating counties into ones that have an above median percentage of population who do not have any forms (public or private) health insurance coverage and that of below. We construct our income variable by adopting the “median household income”. 
+
+On the other hand, our Y-variables is the COVID case mortality rate, which is the percentage when the number of Covid deaths is divided by the total population.
+
+The reason why I combined 10 years of AQI data is because I aim to analyze the long-time effect of ambient air pollution exposure associated respiratory comorbidities which increase the likelihood of contracting COVID-19. This methodology is supported by Barnett-Itzhaki and Levi (2021), in which they examine the association between population-weighted long-term exposure to MP 2.5 and NOx and the morbidity and mortality of COVID-19 over time following the detection of the positive case. Based on multivariate linear regressions, their results suggest PM 2.5 concentrations in 2015-2017 were positively correlated with COVID -19 morbidity and mortality. This result further supports the use of a decade of cumulative air quality data when it comes to analyze the air pollution exposure, its associated comorbidities, and the likelihood of contracting COVID-19. Tripathy et al., (2021) suggests that chronic exposure to some ambient pollutants may prime immune cells to be more reactive and thus increase the likelihood of inflammatory diseases, including allergies, asthma, and cardiovascular disease due to an increase in inflammatory responses. 
+
+
